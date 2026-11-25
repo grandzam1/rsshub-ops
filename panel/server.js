@@ -476,4 +476,68 @@ app.post('/api/test-x', async (req, res) => {
     } catch (e) { res.json({ ok: false, message: e.message }); }
 });
 
+// ---- Webshare usage (read-only, via the webshare CLI) ----
+const WEBSHARE_KEY = panelEnv.WEBSHARE_API_KEY;
+function webshare(args) {
+    return new Promise((resolve, reject) => {
+        execFile('/usr/local/bin/webshare', [...args, '--json'], {
+            timeout: 30000, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8',
+            env: { PATH: process.env.PATH, HOME: process.env.HOME || '/tmp', NO_COLOR: '1', WEBSHARE_API_KEY: WEBSHARE_KEY },
+        }, (err, stdout, stderr) => {
+            if (err) return reject(new Error(String(stderr || err.message).trim()));
+            try { resolve(JSON.parse(stdout)); } catch { reject(new Error('Unexpected output from webshare CLI')); }
+        });
+    });
+}
+function monthsBefore(iso, n) {
+    const d = new Date(iso), day = d.getUTCDate();
+    d.setUTCDate(1);
+    d.setUTCMonth(d.getUTCMonth() - n);
+    d.setUTCDate(Math.min(day, new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()));
+    return d;
+}
+let wsCache = { t: 0, json: null };
+app.get('/api/webshare', async (req, res) => {
+    if (!WEBSHARE_KEY) return res.json({ ok: false, configured: false, message: 'WEBSHARE_API_KEY is not set in the panel .env' });
+    if (wsCache.json && Date.now() - wsCache.t < 60000 && req.query.refresh !== '1') return res.json(wsCache.json);
+    try {
+        const { plan, subscription: sub } = await webshare(['account']);
+        // bandwidth resets monthly: step back from the renewal date to the current cycle start
+        let n = 0, start = new Date(sub.end_date);
+        while (start > Date.now()) start = monthsBefore(sub.end_date, ++n);
+        if (sub.start_date && start < new Date(sub.start_date)) start = new Date(sub.start_date);
+        const hours = Math.max(1, Math.ceil((Date.now() - start) / 3600e3));
+        const id = String(plan.id);
+        const [cycle, hourly, proxies] = await Promise.all([
+            webshare(['stats', '--plan', id, '--since', `${hours}h`]),
+            webshare(['stats', '--hourly', '--plan', id, '--since', '30d']),
+            webshare(['proxies', 'list', '--plan', id, '--limit', '0']),
+        ]);
+        const daily = {};
+        for (const h of hourly || []) {
+            if (h.is_projected) continue;
+            const d = daily[h.timestamp.slice(0, 10)] ||= { bytes: 0, requests: 0, failed: 0 };
+            d.bytes += h.bandwidth_total; d.requests += h.requests_total; d.failed += h.requests_failed;
+        }
+        const countries = {};
+        for (const p of proxies || []) countries[p.country_code] = (countries[p.country_code] || 0) + 1;
+        const limitBytes = plan.bandwidth_limit * 1e9;
+        const json = {
+            ok: true, configured: true, keyLast4: WEBSHARE_KEY.slice(-4), fetchedAt: new Date().toISOString(),
+            plan: { id: plan.id, type: plan.proxy_type, proxyCount: plan.proxy_count, bandwidthLimitGB: plan.bandwidth_limit },
+            cycle: { start: start.toISOString(), renews: sub.end_date, willRenew: sub.will_renew, throttled: sub.throttled },
+            usage: {
+                usedBytes: cycle.bandwidth_total, limitBytes, remainingBytes: Math.max(0, limitBytes - cycle.bandwidth_total),
+                requests: cycle.requests_total, failed: cycle.requests_failed, lastRequestAt: cycle.last_request_sent_at,
+            },
+            proxies: { total: (proxies || []).length, valid: (proxies || []).filter((p) => p.valid).length, countries },
+            daily: Object.keys(daily).sort().map((day) => ({ day, ...daily[day] })),
+        };
+        wsCache = { t: Date.now(), json };
+        res.json(json);
+    } catch (e) {
+        res.status(502).json({ ok: false, configured: true, message: maskSecrets(String(e.message)).split(WEBSHARE_KEY).join('•••').slice(0, 300) });
+    }
+});
+
 app.listen(PORT, '127.0.0.1', () => console.log(`panel on 127.0.0.1:${PORT}`));

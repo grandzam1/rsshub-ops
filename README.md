@@ -7,8 +7,8 @@ No secrets in this repo — only examples with empty values.
 
 | File | Goes to on the server | Purpose |
 |---|---|---|
-| `panel/` | `/opt/rsshub-panel/` | Express admin panel (login, env editor, actions, state banner). `server.js` is the whole backend; `public/` is the UI. |
-| `panel/.env.example` | `/opt/rsshub-panel/.env` | Copy and fill: `PANEL_PASSWORD`, `SESSION_SECRET`, `WEBSHARE_API_TOKEN` (optional). |
+| `panel/` | `/opt/rsshub-panel/` | Express admin panel (login, env editor, actions, state banner, read-only Webshare usage tab). `server.js` is the whole backend; `public/` is the UI. |
+| `panel/.env.example` | `/opt/rsshub-panel/.env` | Copy and fill: `PANEL_PASSWORD`, `SESSION_SECRET`, `WEBSHARE_API_KEY` (optional; enables the Webshare tab, needs the `webshare` CLI at `/usr/local/bin/webshare`). |
 | `deploy/rsshub-deploy.sh` | `/usr/local/bin/rsshub-deploy.sh` | `git pull` → `pnpm install` → `pnpm build` → restart → health check. Writes the current step to `/opt/rsshub-panel/data/deploy-step.txt` for the panel banner. |
 | `deploy/env/rsshub.env.example` | `/opt/rsshub/.env` | Copy and fill the RSSHub env (`REDIS_URL`, `PROXY_URI`, `TWITTER_AUTH_TOKEN`, `ACCESS_KEY`, …). |
 | `deploy/systemd/rsshub.service` | `/etc/systemd/system/rsshub.service` | RSSHub service (user `rsshub`, `/usr/bin/node dist/index.mjs`). |

@@ -38,6 +38,12 @@
   .pill{font-size:.7rem;padding:.15rem .5rem;border-radius:999px;background:#14532d;color:#86efac}
   .pill.off{background:#3f1d1d;color:#fca5a5}
   .iconbtn{background:none;border:1px solid #334155;color:#94a3b8;border-radius:8px;padding:.3rem .6rem;font-size:.75rem;cursor:pointer}
+  @media(max-width:560px){nav{flex-wrap:wrap}}
+  #webshare .row{gap:1rem}
+  #webshare .row>span:first-child{flex-shrink:0}
+  #webshare .row>span:last-child{text-align:right}
+  .bar{height:.45rem;border-radius:999px;background:#0f172a;overflow:hidden;margin:.2rem 0 .5rem}
+  .bar>div{height:100%;background:#38bdf8;min-width:2px}
 </style>
 </head>
 <body>
@@ -48,6 +54,7 @@
   <button data-t="keys">Keys</button>
   <button data-t="actions">Actions</button>
   <button data-t="logs">Logs</button>
+  <button data-t="webshare">Webshare</button>
 </nav>
 <main>
   <section id="status">
@@ -115,6 +122,13 @@
       <pre id="logBox">Loading…</pre>
     </div>
   </section>
+
+  <section id="webshare" style="display:none">
+    <div class="card" id="wsCard"><p style="color:#94a3b8">Loading…</p></div>
+    <div class="card" id="wsDaily" style="display:none"></div>
+    <button class="btn gray" id="wsRefresh" onclick="loadWebshare(true)">Refresh</button>
+    <div class="msg" id="wsMsg"></div>
+  </section>
 </main>
 <script>
 const A = '/panel/api';
@@ -142,6 +156,7 @@ tabs.forEach(b => b.onclick = () => {
   if (b.dataset.t==='settings') loadSettings();
   if (b.dataset.t==='keys') loadKeys();
   if (b.dataset.t==='logs') loadLogs();
+  if (b.dataset.t==='webshare') loadWebshare();
 });
 document.getElementById('logout').onclick = async e => { e.preventDefault(); await fetch(A+'/logout',{method:'POST'}); location.href='/panel/login'; };
 
@@ -217,6 +232,34 @@ async function testX(btn){ btn.disabled=true; const r=await api('/test-x'); btn.
 async function loadLogs(){
   const r = await (await fetch(A+'/logs')).json();
   document.getElementById('logBox').textContent = r.logs || r.error || 'No logs';
+}
+function fmtBytes(b){ const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1000&&i<u.length-1){b/=1000;i++;} return (i?b.toFixed(2):b)+' '+u[i]; }
+async function loadWebshare(refresh){
+  const c = document.getElementById('wsCard'), d = document.getElementById('wsDaily'), m = document.getElementById('wsMsg');
+  const btn = document.getElementById('wsRefresh');
+  m.style.display = 'none'; btn.disabled = true; btn.textContent = 'Loading…';
+  const r = await fetch(A+'/webshare'+(refresh?'?refresh=1':'')).then(x => x.json()).catch(()=>({ok:false,message:'Request failed'}));
+  btn.disabled = false; btn.textContent = 'Refresh';
+  if (!r.ok) { c.innerHTML = '<p style="color:#94a3b8">Webshare data unavailable.</p>'; d.style.display = 'none'; msg(m, r.message || 'Failed', false); return; }
+  const row = (k,v) => `<div class="row"><span>${k}</span><span style="color:#94a3b8;font-size:.85rem">${v}</span></div>`;
+  const p = r.usage.limitBytes ? 100*r.usage.usedBytes/r.usage.limitBytes : 0;
+  const pct = p > 0 && p < 0.001 ? '<0.001' : p.toFixed(p < 1 ? 3 : 1);
+  const ctry = Object.entries(r.proxies.countries).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} ${v}`).join(', ');
+  c.innerHTML = row('API key', `<span class="pill">•••${r.keyLast4}</span>`)
+    + row('Plan', `${r.plan.id} · ${r.plan.type} · ${r.plan.proxyCount} proxies`)
+    + row('Bandwidth used (this cycle)', `${fmtBytes(r.usage.usedBytes)} (${pct}%)`)
+    + `<div class="bar"><div style="width:${Math.min(100,p)}%"></div></div>`
+    + row('Limit / remaining', `${r.plan.bandwidthLimitGB} GB / ${(r.usage.remainingBytes/1e9).toFixed(3)} GB left`)
+    + row('Requests (this cycle)', `${r.usage.requests} · ${r.usage.failed} failed`)
+    + row('Cycle', `${new Date(r.cycle.start).toLocaleDateString()} → ${new Date(r.cycle.renews).toLocaleString()}`)
+    + row('Renews', `<span class="pill ${r.cycle.willRenew?'':'off'}">${r.cycle.willRenew?'auto-renew on':'will not renew'}</span>${r.cycle.throttled?' <span class="pill off">throttled</span>':''}`)
+    + row('Proxies valid', `${r.proxies.valid} / ${r.proxies.total}`)
+    + row('Countries', ctry || '—')
+    + row('Last request', r.usage.lastRequestAt ? new Date(r.usage.lastRequestAt).toLocaleString() : '—')
+    + row('Fetched', new Date(r.fetchedAt).toLocaleString());
+  d.style.display = '';
+  d.innerHTML = '<label style="margin:0 0 .4rem">Daily usage (UTC, last 30 days, days with traffic)</label>'
+    + (r.daily.length ? r.daily.slice().reverse().map(x => row(x.day, `${fmtBytes(x.bytes)} · ${x.requests} req${x.failed?` · ${x.failed} failed`:''}`)).join('') : '<div class="hint">No traffic yet.</div>');
 }
 loadStatus();
 </script>

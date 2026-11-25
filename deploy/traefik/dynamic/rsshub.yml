@@ -1,0 +1,14 @@
+http:
+  routers:
+    rsshub-host:
+      rule: Host(`YOUR_HOST`)
+      entrypoints:
+        - websecure
+      tls:
+        certresolver: letsencrypt
+      service: rsshub-host
+  services:
+    rsshub-host:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:1200

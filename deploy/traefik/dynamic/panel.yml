@@ -1,0 +1,15 @@
+http:
+  routers:
+    rsshub-panel:
+      rule: Host(`YOUR_HOST`) && PathPrefix(`/panel`)
+      priority: 100
+      entrypoints:
+        - websecure
+      tls:
+        certresolver: letsencrypt
+      service: rsshub-panel
+  services:
+    rsshub-panel:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:3100

@@ -1,0 +1,16 @@
+[Unit]
+Description=RSSHub
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=rsshub
+WorkingDirectory=/opt/rsshub
+EnvironmentFile=/opt/rsshub/.env
+Environment=NODE_OPTIONS=--max-http-header-size=32768
+ExecStart=/usr/bin/node dist/index.mjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

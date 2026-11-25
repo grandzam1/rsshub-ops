@@ -1,0 +1,14 @@
+[Unit]
+Description=RSSHub admin panel
+After=network.target
+
+[Service]
+Type=simple
+User=rsshub
+WorkingDirectory=/opt/rsshub-panel
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1 @@
+rsshub ALL=(root) NOPASSWD: /bin/systemctl restart rsshub, /bin/systemctl status rsshub, /bin/systemctl show rsshub*, /bin/journalctl -u rsshub*, /usr/bin/redis-cli FLUSHALL, /usr/local/bin/rsshub-deploy.sh

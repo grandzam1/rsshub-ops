@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RSSHub Panel</title>
+<link rel="stylesheet" href="state-banner.css">
+<style>
+  *{box-sizing:border-box;margin:0;font-family:system-ui,-apple-system,sans-serif}
+  body{background:#0f172a;color:#e2e8f0;min-height:100vh}
+  header{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.2rem;background:#1e293b;position:sticky;top:0;z-index:5}
+  header h1{font-size:1.05rem}
+  header a{color:#94a3b8;font-size:.85rem;text-decoration:none}
+  nav{display:flex;gap:.4rem;padding:.7rem 1rem;background:#16202f;overflow-x:auto}
+  nav button{padding:.5rem 1rem;border:0;border-radius:999px;background:transparent;color:#94a3b8;font-size:.9rem;cursor:pointer;white-space:nowrap}
+  nav button.on{background:#38bdf8;color:#082f49;font-weight:700}
+  main{max-width:720px;margin:0 auto;padding:1.2rem 1rem 4rem}
+  .card{background:#1e293b;border-radius:14px;padding:1.2rem;margin-bottom:1rem}
+  .row{display:flex;align-items:center;justify-content:space-between;padding:.55rem 0;border-bottom:1px solid #28364d}
+  .row:last-child{border:0}
+  .dot{width:.7rem;height:.7rem;border-radius:50%;display:inline-block;margin-right:.5rem}
+  .ok{background:#4ade80}.bad{background:#f87171}
+  label{display:block;font-size:.85rem;color:#cbd5e1;margin-top:1rem}
+  .hint{font-size:.75rem;color:#64748b;margin-top:.2rem}
+  input,select{width:100%;margin-top:.35rem;padding:.65rem .8rem;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:.95rem}
+  input:focus,select:focus{outline:none;border-color:#38bdf8}
+  .btn{display:inline-block;margin-top:1rem;padding:.7rem 1.2rem;border:0;border-radius:10px;background:#38bdf8;color:#082f49;font-weight:700;cursor:pointer;font-size:.9rem}
+  .btn.gray{background:#334155;color:#e2e8f0}
+  .btn.red{background:#f87171;color:#450a0a}
+  .btn:disabled{opacity:.5;cursor:wait}
+  .msg{margin-top:.9rem;padding:.7rem .9rem;border-radius:10px;font-size:.85rem;display:none;white-space:pre-wrap;word-break:break-all}
+  .msg.ok{background:#14532d33;color:#86efac;border:1px solid #166534}
+  .msg.err{background:#7f1d1d33;color:#fca5a5;border:1px solid #991b1b}
+  pre{background:#0f172a;border-radius:10px;padding:1rem;font-size:.75rem;overflow:auto;max-height:420px;margin-top:1rem}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 1rem}
+  @media(max-width:560px){.grid2{grid-template-columns:1fr}}
+  .keyrow{display:flex;gap:.5rem;align-items:center;padding:.5rem 0;border-bottom:1px solid #28364d}
+  .keyrow code{flex:1;font-size:.85rem}
+  .pill{font-size:.7rem;padding:.15rem .5rem;border-radius:999px;background:#14532d;color:#86efac}
+  .pill.off{background:#3f1d1d;color:#fca5a5}
+  .iconbtn{background:none;border:1px solid #334155;color:#94a3b8;border-radius:8px;padding:.3rem .6rem;font-size:.75rem;cursor:pointer}
+</style>
+</head>
+<body>
+<header><h1>RSSHub Admin</h1><a href="#" id="logout">Log out</a></header>
+<nav>
+  <button class="on" data-t="status">Status</button>
+  <button data-t="settings">Settings</button>
+  <button data-t="keys">Keys</button>
+  <button data-t="actions">Actions</button>
+  <button data-t="logs">Logs</button>
+</nav>
+<main>
+  <section id="status">
+    <div class="card" id="stCard"><p style="color:#94a3b8">Loading…</p></div>
+    <button class="btn gray" onclick="loadStatus()">Refresh</button>
+  </section>
+
+  <section id="settings" style="display:none">
+    <div class="card">
+      <div class="grid2" id="setGrid"></div>
+      <button class="btn op-btn" id="saveSet" onclick="saveSettings()">Save & restart</button>
+      <div class="msg" id="setMsg"></div>
+    </div>
+    <div class="card">
+      <label>Restore a previous .env</label>
+      <div class="hint">Every save keeps a backup. Pick one to roll back to.</div>
+      <select id="backupSel"></select>
+      <button class="btn gray" onclick="restoreBackup()">Restore selected</button>
+      <div class="msg" id="bkMsg"></div>
+    </div>
+  </section>
+
+  <section id="keys" style="display:none">
+    <div class="card">
+      <label>Twitter auth_token</label>
+      <div class="hint">Paste just the auth_token value (cookie string OK — we'll strip it). Comma-separate several.</div>
+      <input id="twToken" placeholder="auth_token value(s)">
+      <button class="btn" onclick="saveKey('TWITTER_AUTH_TOKEN','twToken')">Save</button>
+      <button class="btn gray" onclick="removeKey('TWITTER_AUTH_TOKEN')">Remove</button>
+      <button class="btn gray" onclick="testX(this)">Test X</button>
+    </div>
+    <div class="card">
+      <label>ACCESS_KEY</label>
+      <div class="hint">Locks your RSSHub behind ?key=. Set one if the instance is public.</div>
+      <input id="accKey" placeholder="leave empty to remove">
+      <button class="btn" onclick="saveKey('ACCESS_KEY','accKey')">Save</button>
+      <button class="btn gray" onclick="genKey()">Generate random</button>
+      <button class="btn gray" onclick="removeKey('ACCESS_KEY')">Remove</button>
+    </div>
+    <div class="card">
+      <label>Other keys</label>
+      <div class="hint">Any NAME=value from RSSHub config (e.g. GITHUB_ACCESS_TOKEN).</div>
+      <div class="keyrow"><input id="newKn" placeholder="NAME" style="flex:1"><input id="newKv" placeholder="value" style="flex:2"></div>
+      <button class="btn" onclick="addOther()">Add / update</button>
+      <div id="keyList" style="margin-top:1rem"></div>
+      <div class="msg" id="keyMsg"></div>
+    </div>
+  </section>
+
+  <section id="actions" style="display:none">
+    <div class="card">
+      <button class="btn op-btn" onclick="act('restart',this)">Restart RSSHub</button>
+      <button class="btn gray op-btn" onclick="act('clear-cache',this)">Clear cache</button>
+      <button class="btn op-btn" onclick="act('deploy',this)">Deploy now</button>
+      <button class="btn gray" onclick="testProxy(this)">Test proxy</button>
+      <div class="hint" style="margin-top:.6rem">Deploy pulls latest code from GitHub, rebuilds and restarts. Takes a few minutes.</div>
+      <div class="msg" id="actMsg"></div>
+      <pre id="actOut" style="display:none"></pre>
+    </div>
+  </section>
+
+  <section id="logs" style="display:none">
+    <div class="card">
+      <button class="btn gray" onclick="loadLogs()">Reload logs</button>
+      <pre id="logBox">Loading…</pre>
+    </div>
+  </section>
+</main>
+<script>
+const A = '/panel/api';
+const HINTS = {
+  CACHE_EXPIRE:'Seconds to cache a whole route. Default 300.',
+  CACHE_CONTENT_EXPIRE:'Seconds to cache fetched content. Default 3600.',
+  MEMORY_MAX:'Max cached items in memory.',
+  LOGGER_LEVEL:'debug, info, warn, error or silent.',
+  NO_LOGFILES:'true = log to console only (recommended).',
+  DEBUG_INFO:'Show debug info on the homepage. Keep false in prod.',
+  FORMAT:'Force output format: rss / atom / json / rss3 (empty = auto).',
+  TITLE_LENGTH_LIMIT:'Max characters in item titles.',
+  REQUEST_TIMEOUT:'Upstream request timeout, milliseconds (1000–120000).',
+  REQUEST_RETRY:'Retries for failed upstream requests (0–10).',
+  PROXY_PROTOCOL:'http / https / socks / socks5 / socks5h / socks4 (empty = off).',
+  PROXY_HOST:'Proxy hostname or IP.',
+  PROXY_PORT:'Proxy port (1–65535).',
+  PROXY_URL_REGEX:'Only URLs matching this regex use the proxy. .* = everything.',
+};
+const SETS = Object.keys(HINTS);
+const tabs = document.querySelectorAll('nav button');
+tabs.forEach(b => b.onclick = () => {
+  tabs.forEach(x => x.classList.remove('on')); b.classList.add('on');
+  document.querySelectorAll('main section').forEach(s => s.style.display = s.id===b.dataset.t?'':'none');
+  if (b.dataset.t==='settings') loadSettings();
+  if (b.dataset.t==='keys') loadKeys();
+  if (b.dataset.t==='logs') loadLogs();
+});
+document.getElementById('logout').onclick = async e => { e.preventDefault(); await fetch(A+'/logout',{method:'POST'}); location.href='/panel/login'; };
+
+function msg(el, text, ok){ el.className='msg '+(ok?'ok':'err'); el.textContent=text; el.style.display='block'; }
+async function api(path, body){ const r = await fetch(A+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return {code:r.status, ...(await r.json().catch(()=>({})))}; }
+
+async function loadStatus(){
+  const c = document.getElementById('stCard');
+  const s = await (await fetch(A+'/status')).json();
+  const row = (name,on,extra='') => `<div class="row"><span><span class="dot ${on?'ok':'bad'}"></span>${name}</span><span style="color:#94a3b8;font-size:.85rem">${extra}</span></div>`;
+  c.innerHTML = row('RSSHub',s.rsshub,'healthz') + row('Redis',s.redis,'ping')
+    + `<div class="row"><span>Running since</span><span style="color:#94a3b8;font-size:.85rem">${s.activeSince||'—'}</span></div>`
+    + `<div class="row"><span>Auto-recoveries since boot</span><span style="color:#94a3b8;font-size:.85rem">${s.restarts}</span></div>`
+    + `<div class="row"><span>Last build/deploy</span><span style="color:#94a3b8;font-size:.85rem">${s.lastDeploy?new Date(s.lastDeploy).toLocaleString():'—'}</span></div>`
+    + `<div class="row"><span>ACCESS_KEY</span><span class="pill ${s.accessKeySet?'':'off'}">${s.accessKeySet?'set':'not set'}</span></div>`;
+}
+async function loadSettings(){
+  const v = await (await fetch(A+'/settings')).json();
+  document.getElementById('setGrid').innerHTML = SETS.map(k =>
+    `<div><label>${k}</label><input id="s_${k}" value="${(v[k]||'').replace(/"/g,'&quot;')}"><div class="hint">${HINTS[k]}</div></div>`).join('');
+  const bk = await (await fetch(A+'/backups')).json();
+  document.getElementById('backupSel').innerHTML = bk.map(b=>`<option>${b.name}</option>`).join('') || '<option value="">— none —</option>';
+}
+async function saveSettings(){
+  const btn = document.getElementById('saveSet'); btn.disabled = true;
+  const settings = {}; SETS.forEach(k => settings[k] = document.getElementById('s_'+k).value.trim());
+  const r = await api('/save',{settings}); btn.disabled = false;
+  msg(document.getElementById('setMsg'), r.ok ? 'Saved, restarted, healthy ✓' : (r.error||'Failed'), r.ok);
+}
+async function restoreBackup(){
+  const name = document.getElementById('backupSel').value; if(!name) return;
+  const r = await api('/backups/restore',{name});
+  msg(document.getElementById('bkMsg'), r.ok?'Restored and healthy ✓':(r.error||'Failed'), r.ok);
+}
+async function loadKeys(){
+  const list = await (await fetch(A+'/keys')).json();
+  document.getElementById('keyList').innerHTML = list.map(k =>
+    `<div class="keyrow"><code>${k.name}</code><span class="pill ${k.configured?'':'off'}">${k.configured?'•••'+k.last4:'empty'}</span><button class="iconbtn" onclick="removeKey('${k.name}')">remove</button></div>`).join('') || '<div class="hint">No keys configured.</div>';
+}
+async function saveKey(name, inputId){
+  const v = document.getElementById(inputId).value.trim();
+  const r = await api('/save',{keys:{[name]:v}});
+  msg(document.getElementById('keyMsg'), r.ok?`Saved ${name} — restarted ✓`:(r.error||'Failed'), r.ok);
+  loadKeys();
+}
+async function removeKey(name){
+  const r = await api('/save',{removeKeys:[name]});
+  msg(document.getElementById('keyMsg'), r.ok?`Removed ${name} — restarted ✓`:(r.error||'Failed'), r.ok);
+  loadKeys();
+}
+function genKey(){ document.getElementById('accKey').value = crypto.getRandomValues(new Uint8Array(16)).reduce((s,b)=>s+b.toString(16).padStart(2,'0'),''); }
+async function addOther(){
+  const n = document.getElementById('newKn').value.trim(), v = document.getElementById('newKv').value.trim();
+  if(!n) return;
+  const r = await api('/save',{keys:{[n]:v}});
+  msg(document.getElementById('keyMsg'), r.ok?`Saved ${n} — restarted ✓`:(r.error||'Failed'), r.ok);
+  document.getElementById('newKn').value = document.getElementById('newKv').value = '';
+  loadKeys();
+}
+async function act(name, btn){
+  btn.disabled = true;
+  const m = document.getElementById('actMsg'), o = document.getElementById('actOut');
+  msg(m,'Working…',true); o.style.display='none';
+  const r = await api('/actions/'+name);
+  btn.disabled = false;
+  msg(m, r.ok ? (r.message||'Done ✓') : (r.error||'Failed'), r.ok);
+  if(r.output){ o.style.display='block'; o.textContent = r.output; }
+}
+async function testProxy(btn){ btn.disabled=true; const r=await api('/test-proxy'); btn.disabled=false;
+  msg(document.getElementById('actMsg'), r.message||(r.ok?'Proxy works':'Failed'), r.ok); }
+async function testX(btn){ btn.disabled=true; const r=await api('/test-x'); btn.disabled=false;
+  msg(document.getElementById('keyMsg'), r.message, r.ok); }
+async function loadLogs(){
+  const r = await (await fetch(A+'/logs')).json();
+  document.getElementById('logBox').textContent = r.logs || r.error || 'No logs';
+}
+loadStatus();
+</script>
+<script src="state-banner.js"></script>
+</body>
+</html>

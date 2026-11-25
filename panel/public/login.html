@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RSSHub Panel — Sign in</title>
+<style>
+  *{box-sizing:border-box;margin:0;font-family:system-ui,-apple-system,sans-serif}
+  body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;padding:1rem}
+  .card{background:#1e293b;border-radius:16px;padding:2rem;width:100%;max-width:380px;box-shadow:0 20px 50px #0007}
+  h1{font-size:1.3rem;margin-bottom:.4rem}
+  p.sub{color:#94a3b8;font-size:.85rem;margin-bottom:1.4rem}
+  input{width:100%;padding:.8rem 1rem;border-radius:10px;border:1px solid #334155;background:#0f172a;color:#fff;font-size:1rem}
+  input:focus{outline:none;border-color:#38bdf8}
+  button{width:100%;margin-top:1rem;padding:.8rem;border:0;border-radius:10px;background:#38bdf8;color:#082f49;font-weight:700;font-size:1rem;cursor:pointer}
+  button:active{transform:scale(.98)}
+  .err{color:#f87171;font-size:.85rem;margin-top:.8rem;min-height:1.2em}
+  .state-line{position:fixed;left:0;right:0;bottom:0;padding:.5rem 1rem;background:#0b1220;border-top:1px solid #28364d;font-size:.78rem;color:#94a3b8;text-align:center}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>RSSHub Admin</h1>
+  <p class="sub">Enter the panel password to continue.</p>
+  <form id="f">
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" autofocus>
+    <button type="submit">Sign in</button>
+    <div class="err" id="err"></div>
+  </form>
+</div>
+<div class="state-line">Sign in to see RSSHub status</div>
+<script>
+document.getElementById('f').onsubmit = async e => {
+  e.preventDefault();
+  const r = await fetch('/panel/api/login', {method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({password: document.getElementById('pw').value})});
+  if (r.ok) location.href = '/panel/';
+  else { const j = await r.json().catch(()=>({})); document.getElementById('err').textContent = j.error || 'Wrong password'; }
+};
+</script>
+</body>
+</html>

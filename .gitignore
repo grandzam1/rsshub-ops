@@ -1,0 +1,10 @@
+.env
+*.env
+!*.example
+data/
+backups/
+*.tar.gz
+acme.json
+node_modules/
+*.key
+*.pem

@@ -2,40 +2,28 @@ import express from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { execFile, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { panelEnvOperation, readEnv, writeEnvFile, config, panelEnv, envGet, restartRsshub, applySettings, healthz, testProxy, testX, webshare, waitHealthy, maskSecrets, serviceStatus, stateFor, clearCache, logs, deploy, deploying as serviceDeploying, deploymentStep } from './service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PANEL_DIR = __dirname;
-const RSSHUB_DIR = '/opt/rsshub';
-const ENV_FILE = path.join(RSSHUB_DIR, '.env');
-const BACKUP_DIR = path.join(PANEL_DIR, 'backups');
-const PORT = 3100;
+const RSSHUB_DIR = config.RSSHUB_DIR;
+const ENV_FILE = config.RSSHUB_ENV_FILE;
+const BACKUP_DIR = config.PANEL_BACKUP_DIR;
+const PORT = Number(config.PANEL_PORT);
 
 // ---- load panel env ----
-const panelEnv = {};
-for (const line of fs.readFileSync(path.join(PANEL_DIR, '.env'), 'utf8').split('\n')) {
-    const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
-    if (m) panelEnv[m[1]] = m[2].trim();
-}
 const PANEL_PASSWORD = panelEnv.PANEL_PASSWORD;
 const SESSION_SECRET = panelEnv.SESSION_SECRET;
 
 // ---- managed env keys ----
-const SETTING_KEYS = ['CACHE_EXPIRE', 'CACHE_CONTENT_EXPIRE', 'MEMORY_MAX', 'LOGGER_LEVEL',
-    'NO_LOGFILES', 'DEBUG_INFO', 'FORMAT', 'TITLE_LENGTH_LIMIT', 'REQUEST_TIMEOUT', 'REQUEST_RETRY',
-    'PROXY_PROTOCOL', 'PROXY_HOST', 'PROXY_PORT', 'PROXY_URL_REGEX'];
-const SECRET_KEYS = ['TWITTER_AUTH_TOKEN', 'ACCESS_KEY'];
-const BLOCKED_KEYS = new Set(['PORT', 'LISTEN_INADDR_ANY', 'ALLOW_USER_SUPPLY_UNSAFE_DOMAIN',
-    'ENABLE_REMOTE_DEBUGGING', 'PAC_SCRIPT', 'REMOTE_CONFIG', 'CHROMIUM_EXECUTABLE_PATH',
-    'PUPPETEER_WS_ENDPOINT', 'PLAYWRIGHT_WS_ENDPOINT', 'PLAYWRIGHT_CDP_ENDPOINT',
-    'NODE_ENV', 'REDIS_URL', 'CACHE_TYPE']);
+const PANEL_ENV_FILE = path.join(PANEL_DIR, '.env');
 
 // ---- sessions ----
 function sign(v) { return crypto.createHmac('sha256', SESSION_SECRET).update(v).digest('hex'); }
 function makeCookie() {
     const exp = Date.now() + 12 * 3600 * 1000;
-    return `panel_session=${exp}.${sign('s' + exp)}; HttpOnly; Path=/panel; SameSite=Strict`;
+    return `panel_session=${exp}.${sign('s' + exp)}; HttpOnly; Path=${config.PANEL_PREFIX}; SameSite=Strict`;
 }
 function checkCookie(req) {
     const c = (req.headers.cookie || '').match(/panel_session=([\w.]+)/);
@@ -58,18 +46,11 @@ function readEnvLines() {
     try { return fs.readFileSync(ENV_FILE, 'utf8').split('\n'); }
     catch { return []; }
 }
-function envGet(key) {
-    for (const l of readEnvLines()) {
-        const m = l.match(/^([A-Za-z0-9_]+)=(.*)$/);
-        if (m && m[1] === key) return m[2].trim();
-    }
-    return undefined;
-}
 function writeEnv(updates, removals) {
     const lines = readEnvLines();
     const seen = new Set();
     const out = lines.map(l => {
-        const m = l.match(/^([A-Za-z0-9_]+)=/);
+        const m = l.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
         if (!m) return l;
         const k = m[1];
         if (removals.has(k)) { seen.add(k); return null; }
@@ -79,53 +60,20 @@ function writeEnv(updates, removals) {
     for (const [k, v] of Object.entries(updates)) {
         if (!seen.has(k)) out.push(`${k}=${v}`);
     }
-    const tmp = ENV_FILE + '.paneltmp';
-    fs.writeFileSync(tmp, out.join('\n'));
-    fs.renameSync(tmp, ENV_FILE);
-    try { fs.chownSync(ENV_FILE, fs.statSync(RSSHUB_DIR).uid, fs.statSync(RSSHUB_DIR).gid); } catch {}
+    writeEnvFile(ENV_FILE, out.join('\n'));
 }
 function backupEnv() {
-    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
     const name = `env-${Date.now()}`;
-    try { fs.copyFileSync(ENV_FILE, path.join(BACKUP_DIR, name)); } catch { fs.writeFileSync(path.join(BACKUP_DIR, name), ''); }
-    const files = fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('env-')).sort();
-    while (files.length > 20) fs.unlinkSync(path.join(BACKUP_DIR, files.shift()));
+    fs.copyFileSync(ENV_FILE, path.join(BACKUP_DIR, name));
+    fs.chmodSync(path.join(BACKUP_DIR, name), 0o600);
     return name;
 }
 
 // ---- sudo helpers ----
-function sudo(args, timeout = 15000) {
-    return execFileSync('sudo', ['-n', ...args], { timeout, encoding: 'utf8' });
-}
-const restartRsshub = () => sudo(['/bin/systemctl', 'restart', 'rsshub'], 20000);
-
-async function healthz() {
-    const key = envGet('ACCESS_KEY');
-    const url = 'http://127.0.0.1:1200/healthz' + (key ? `?key=${encodeURIComponent(key)}` : '');
-    const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), 8000);
-    try {
-        const r = await fetch(url, { signal: ctl.signal });
-        return r.ok;
-    } catch { return false; } finally { clearTimeout(t); }
-}
-async function waitHealthy(ms = 30000) {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-        if (await healthz()) return true;
-        await new Promise(r => setTimeout(r, 2000));
-    }
-    return false;
-}
-function maskSecrets(text) {
-    return text
-        .replace(/([A-Za-z0-9_]*(TOKEN|KEY|SECRET|PASSWORD|COOKIE)[A-Za-z0-9_]*)=([^\s"']+)/gi, '$1=•••')
-        .replace(/\b[0-9a-f]{24,}\b/gi, '•••')
-        .replace(/ghp_\w+/g, '•••');
-}
 
 // ---- managed operations ----
-const DATA_DIR = path.join(PANEL_DIR, 'data');
+const DATA_DIR = config.PANEL_DATA_DIR;
 const OP_FILE = path.join(DATA_DIR, 'operation.json');
 let lastOp = null;
 try { lastOp = JSON.parse(fs.readFileSync(OP_FILE, 'utf8')); } catch {}
@@ -178,8 +126,8 @@ app.disable('x-powered-by');
 
 // strip /panel prefix (Traefik PathPrefix)
 app.use((req, res, next) => {
-    if (req.url === '/panel') req.url = '/';
-    else if (req.url.startsWith('/panel/')) req.url = req.url.slice(6);
+    if (req.url === config.PANEL_PREFIX) req.url = '/';
+    else if (req.url.startsWith(config.PANEL_PREFIX + '/')) req.url = req.url.slice(config.PANEL_PREFIX.length);
     next();
 });
 
@@ -188,7 +136,7 @@ app.use((req, res, next) => {
     if (req.path === '/api/login' || req.path === '/login') return next();
     if (!checkCookie(req)) {
         if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not logged in' });
-        return res.redirect('/panel/login');
+        return res.redirect(config.PANEL_PREFIX + '/login');
     }
     next();
 });
@@ -210,29 +158,13 @@ app.post('/api/login', (req, res) => {
 });
 
 app.post('/api/logout', (req, res) => {
-    res.setHeader('Set-Cookie', 'panel_session=; HttpOnly; Path=/panel; Max-Age=0');
+    res.setHeader('Set-Cookie', `panel_session=; HttpOnly; Path=${config.PANEL_PREFIX}; Max-Age=0`);
     res.json({ ok: true });
 });
 
 app.get('/api/status', async (req, res) => {
-    let redis = false;
-    try { redis = execFileSync('redis-cli', ['ping'], { timeout: 5000, encoding: 'utf8' }).trim() === 'PONG'; } catch {}
-    let up = '', restarts = '';
-    try {
-        const st = sudo(['/bin/systemctl', 'show', 'rsshub', '-p', 'ActiveEnterTimestamp'], 8000);
-        up = (st.match(/ActiveEnterTimestamp=(.+)/) || [])[1] || '';
-    } catch {}
-    try { restarts = String(restartsSinceBoot()); } catch {}
-    let lastDeploy = '';
-    try { lastDeploy = fs.statSync(path.join(RSSHUB_DIR, 'dist', 'index.mjs')).mtime.toISOString(); } catch {}
-    res.json({
-        rsshub: await healthz(),
-        redis,
-        activeSince: up,
-        restarts,
-        lastDeploy,
-        accessKeySet: !!envGet('ACCESS_KEY'),
-    });
+    const status = serviceStatus();
+    res.json({ ...status, rsshub: await healthz(), activeSince: status.since, accessKeySet: !!envGet('ACCESS_KEY') });
 });
 
 // ---- /api/state: banner state (cached + rate-limited) ----
@@ -243,31 +175,18 @@ function stateRateOK(key) {
     if (a.length >= 30) { stateHits.set(key, a); return false; }
     a.push(now); stateHits.set(key, a); return true;
 }
-let restartsCache = { t: 0, v: null };
-function restartsSinceBoot() {
-    if (restartsCache.v !== null && Date.now() - restartsCache.t < 120000) return restartsCache.v;
-    const out = sudo(['/bin/journalctl', '-u', 'rsshub', '-b', '--no-pager', '-o', 'cat'], 15000);
-    const v = (out.match(/Scheduled restart job/g) || []).length;
-    restartsCache = { t: Date.now(), v };
-    return v;
-}
 let stateCache = { t: 0, json: null };
 let healthFailStreak = 0;
 let currentState = 'UNKNOWN';
 let stateSince = Date.now();
 const DEPLOY_STEPS = ['pull', 'install', 'build', 'restart', 'health'];
-const STEP_FILE = path.join(DATA_DIR, 'deploy-step.txt');
 function deployStep() {
-    try {
-        const name = fs.readFileSync(STEP_FILE, 'utf8').trim();
-        const n = DEPLOY_STEPS.indexOf(name) + 1;
-        return n ? { n, of: DEPLOY_STEPS.length, name } : null;
-    } catch { return null; }
+    const name = deploymentStep();
+    const n = DEPLOY_STEPS.indexOf(name) + 1;
+    return n ? { n, of: DEPLOY_STEPS.length, name } : null;
 }
 function deploying() { // panel deploy in progress, or GitHub Actions running the script over SSH
-    if (runningOp === 'deploy') return true;
-    try { execFileSync('pgrep', ['-f', 'rsshub-depl[o]y'], { timeout: 5000, encoding: 'utf8' }); return true; }
-    catch { return false; }
+    return runningOp === 'deploy' || serviceDeploying();
 }
 function setState(s) {
     if (s !== currentState) { currentState = s; stateSince = Date.now(); }
@@ -278,18 +197,7 @@ app.get('/api/state', async (req, res) => {
     if (stateCache.json && Date.now() - stateCache.t < 2000) return res.json(stateCache.json);
     const healthy = await healthz();
     healthFailStreak = healthy ? 0 : healthFailStreak + 1;
-    let redis = false;
-    try { redis = execFileSync('redis-cli', ['ping'], { timeout: 5000, encoding: 'utf8' }).trim() === 'PONG'; } catch {}
-    let since = '', activeState = '';
-    try {
-        const st = sudo(['/bin/systemctl', 'show', 'rsshub', '-p', 'ActiveEnterTimestamp,ActiveState'], 8000);
-        since = (st.match(/ActiveEnterTimestamp=(.+)/) || [])[1] || '';
-        activeState = (st.match(/ActiveState=(\w+)/) || [])[1] || '';
-    } catch {}
-    let restarts = null;
-    try { restarts = restartsSinceBoot(); } catch {}
-    let lastDeploy = '';
-    try { lastDeploy = fs.statSync(path.join(RSSHUB_DIR, 'dist', 'index.mjs')).mtime.toISOString(); } catch {}
+    const { redis, since, activeState, restarts, lastDeploy } = serviceStatus();
     // deploys pushed via GitHub Actions run rsshub-deploy.sh directly, outside the panel
     let operation = lastOp;
     if (lastDeploy && (!lastOp || new Date(lastOp.at) < new Date(lastDeploy))) {
@@ -300,29 +208,7 @@ app.get('/api/state', async (req, res) => {
         && (!lastDeploy || new Date(lastOp.at) >= new Date(lastDeploy))
         && Date.now() - new Date(lastOp.at) < 3600e3;
     // priority: DEPLOYING > RESTARTING > ERROR > STOPPED > RUNNING > UNKNOWN
-    let state = 'UNKNOWN', reason = '';
-    if (deploying()) {
-        state = 'DEPLOYING';
-        reason = `Deploy in progress${runningOp === 'deploy' ? ' (started from the panel)' : ' (from GitHub)'}`;
-    } else if (runningOp || activeState === 'activating') {
-        state = 'RESTARTING';
-        reason = runningOp ? `Operation in progress: ${runningOp}` : 'Service is starting up';
-    } else if (activeState === 'failed') {
-        state = 'ERROR';
-        reason = 'Service failed — check the logs below';
-    } else if (activeState === 'active' && healthFailStreak >= 2) {
-        state = 'ERROR';
-        reason = 'Service is up but not answering health checks';
-    } else if (recentFailedOp) {
-        state = 'ERROR';
-        reason = `Last operation failed: ${lastOp.name}`;
-    } else if (activeState === 'inactive') {
-        state = 'STOPPED';
-        reason = 'Service is stopped';
-    } else if (activeState === 'active' && healthy) {
-        state = 'RUNNING';
-        reason = 'Up and healthy';
-    }
+    const { state, reason } = stateFor({ isDeploying: deploying(), runningOp, activeState, healthy, healthFailStreak, recentFailedOp, lastOp });
     setState(state);
     const json = {
         state, reason, since, step: state === 'DEPLOYING' ? deployStep() : null,
@@ -331,7 +217,7 @@ app.get('/api/state', async (req, res) => {
     };
     if (state === 'ERROR') {
         try {
-            json.logTail = maskSecrets(sudo(['/bin/journalctl', '-u', 'rsshub', '-n', '20', '--no-pager'], 15000));
+            json.logTail = logs().split('\n').slice(-20).join('\n');
         } catch { json.logTail = ''; }
     }
     stateCache = { t: Date.now(), json };
@@ -340,66 +226,46 @@ app.get('/api/state', async (req, res) => {
 
 // settings read (non-secret values OK to return)
 app.get('/api/settings', (req, res) => {
-    const out = {};
-    for (const k of SETTING_KEYS) out[k] = envGet(k) ?? '';
-    res.json(out);
+    res.json({ rsshub: readEnv(ENV_FILE), panel: readEnv(PANEL_ENV_FILE) });
 });
 
 // keys list — masked
 app.get('/api/keys', (req, res) => {
-    const list = [];
-    for (const l of readEnvLines()) {
-        const m = l.match(/^([A-Za-z0-9_]+)=(.*)$/);
-        if (!m) continue;
-        const [, k, v] = m;
-        if (BLOCKED_KEYS.has(k) || SETTING_KEYS.includes(k)) continue;
-        if (!SECRET_KEYS.includes(k) && !/TOKEN|KEY|SECRET|COOKIE|PASSWORD|AUTH|_URI$/.test(k)) continue;
-        const val = v.trim();
-        list.push({ name: k, configured: val.length > 0, last4: val ? val.slice(-4) : '' });
-    }
-    res.json(list);
+    res.json(Object.entries({ rsshub: readEnv(ENV_FILE), panel: readEnv(PANEL_ENV_FILE) })
+        .flatMap(([source, values]) => Object.entries(values).map(([name, value]) => ({ source, name, value }))));
 });
 
 function badVal(k, v) { return validators[k] && !validators[k](v); }
 
 // save settings and/or keys
 app.post('/api/save', async (req, res) => {
-    const { settings = {}, keys = {}, removeKeys = [] } = req.body || {};
-    const updates = {}, removals = new Set();
-    for (const [k, v] of Object.entries(settings)) {
-        if (!SETTING_KEYS.includes(k)) return res.status(400).json({ error: `Unknown setting ${k}` });
-        if (badVal(k, String(v))) return res.status(400).json({ error: `Invalid value for ${k}` });
-        if (String(v) === '') removals.add(k); else updates[k] = String(v);
+    const { settings = {}, keys = {}, removeKeys = [], panelSettings = {}, removePanelKeys = [] } = req.body || {};
+    const updates = { ...settings, ...keys }, removals = new Set(removeKeys);
+    for (const key of [...Object.keys(updates), ...removals, ...Object.keys(panelSettings), ...removePanelKeys]) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return res.status(400).json({ error: 'Invalid environment variable name' });
     }
-    for (const [k, v] of Object.entries(keys)) {
-        if (!/^[A-Z][A-Z0-9_]*$/.test(k) || BLOCKED_KEYS.has(k) || SETTING_KEYS.includes(k))
-            return res.status(400).json({ error: `Key ${k} not allowed` });
-        let val = String(v);
-        if (k === 'TWITTER_AUTH_TOKEN') {
-            val = val.split(/[;\s]+/).map(s => s.replace(/^auth_token=/i, '')).filter(Boolean).join(',');
-            if (val && !/^[0-9a-f,]+$/i.test(val)) return res.status(400).json({ error: 'auth_token looks wrong' });
-        }
-        if (val === '') removals.add(k); else updates[k] = val;
+    for (const [key, value] of Object.entries(updates)) {
+        updates[key] = String(value);
+        if (value !== '' && badVal(key, updates[key])) return res.status(400).json({ error: `Invalid value for ${key}` });
     }
-    for (const k of removeKeys) {
-        if (BLOCKED_KEYS.has(k)) return res.status(400).json({ error: `Cannot remove ${k}` });
-        removals.add(k);
-    }
+    if ([...Object.values(updates), ...Object.values(panelSettings)].some((value) => typeof value !== 'string' || /[\r\n\0]/.test(value))) return res.status(400).json({ error: 'Values must be single-line strings' });
+    const panelChanged = Object.keys(panelSettings).length > 0 || removePanelKeys.length > 0;
     return runManaged('save', res, async () => {
         const backup = backupEnv();
+        let panelBackup;
         try {
+            if (panelChanged) panelBackup = panelEnvOperation({ action: 'write', updates: panelSettings, removals: removePanelKeys }).backup;
             writeEnv(updates, removals);
-            restartRsshub();
-            if (await waitHealthy()) return { ok: true, backup, message: 'Settings saved, restarted and healthy' };
-            // rollback
-            fs.copyFileSync(path.join(BACKUP_DIR, backup), ENV_FILE);
-            restartRsshub();
-            await waitHealthy(15000);
-            return { code: 500, error: `RSSHub didn't come back healthy. Rolled back to ${backup}.`, rolledBack: true };
+            const healthy = panelChanged ? panelEnvOperation({ action: 'apply' }).ok : (applySettings(), await waitHealthy());
+            if (!healthy) throw new Error('Saved environment failed its health check');
+            if (panelChanged) res.on('finish', () => { try { panelEnvOperation({ action: 'restart' }); } catch {} });
+            return { ok: true, backup, message: 'Settings saved, restarted and healthy' };
         } catch (e) {
-            try { fs.copyFileSync(path.join(BACKUP_DIR, backup), ENV_FILE); restartRsshub(); } catch {}
-            e.message = 'Save failed and was rolled back: ' + e.message;
-            throw e;
+            // rollback
+            if (panelBackup) panelEnvOperation({ action: 'restore', backup: panelBackup });
+            writeEnvFile(ENV_FILE, fs.readFileSync(path.join(BACKUP_DIR, backup), 'utf8'));
+            const recovered = panelChanged ? panelEnvOperation({ action: 'apply' }).ok : (applySettings(), await waitHealthy());
+            return { code: 500, error: recovered ? 'Save failed; previous settings restored and healthy' : 'Save failed; previous settings restored but recovery health check failed', rolledBack: true, recovered };
         }
     });
 });
@@ -417,11 +283,11 @@ app.post('/api/backups/restore', async (req, res) => {
     if (!fs.existsSync(p)) return res.status(404).json({ error: 'Not found' });
     return runManaged('restore', res, async () => {
         const backup = backupEnv();
-        fs.copyFileSync(p, ENV_FILE);
-        restartRsshub();
+        writeEnvFile(ENV_FILE, fs.readFileSync(p, 'utf8'));
+        applySettings();
         if (await waitHealthy()) return { ok: true, message: `Restored ${name}` };
-        fs.copyFileSync(path.join(BACKUP_DIR, backup), ENV_FILE);
-        restartRsshub();
+        writeEnvFile(ENV_FILE, fs.readFileSync(path.join(BACKUP_DIR, backup), 'utf8'));
+        applySettings();
         return { code: 500, error: 'Restored version failed health check; reverted.', rolledBack: true };
     });
 });
@@ -433,62 +299,24 @@ app.post('/api/actions/restart', (req, res) => runManaged('restart', res, async 
 }));
 
 app.post('/api/actions/clear-cache', (req, res) => runManaged('clear-cache', res, async () => {
-    const out = sudo(['/usr/bin/redis-cli', 'FLUSHALL'], 10000).trim();
+    const out = clearCache().trim();
     return { ok: true, message: out };
 }));
 
-app.post('/api/actions/deploy', (req, res) => runManaged('deploy', res, () => new Promise((resolve) => {
-    execFile('sudo', ['-n', '/usr/local/bin/rsshub-deploy.sh'], { timeout: 600000, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 },
-        (err, stdout, stderr) => {
-            let out = maskSecrets((stdout || '') + (stderr || ''));
-            if (out.length > 40000) out = '…(earlier output trimmed)\n' + out.slice(-40000);
-            resolve({ ok: !err, output: out, message: err ? 'Deploy failed' : 'Deploy finished' });
-        });
-})));
+app.post('/api/actions/deploy', (req, res) => runManaged('deploy', res, deploy));
 
 app.get('/api/logs', (req, res) => {
     try {
-        const out = sudo(['/bin/journalctl', '-u', 'rsshub', '-n', '200', '--no-pager'], 15000);
-        res.json({ ok: true, logs: maskSecrets(out) });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+        res.json({ ok: true, logs: logs() });
+    } catch (e) { res.status(500).json({ error: maskSecrets(e.message) }); }
 });
 
-app.post('/api/test-proxy', async (req, res) => {
-    let proxy = envGet('PROXY_URI');
-    if (!proxy) {
-        const proto = envGet('PROXY_PROTOCOL'), host = envGet('PROXY_HOST'), port = envGet('PROXY_PORT');
-        if (!proto || !host || !port) return res.json({ ok: false, message: 'Proxy not configured' });
-        proxy = `${proto}://${host}:${port}`;
-    }
-    try {
-        const out = execFileSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '15',
-            '--proxy', proxy, 'https://api.ipify.org'], { encoding: 'utf8' });
-        res.json({ ok: out === '200', message: `Proxy returned HTTP ${out}` });
-    } catch (e) { res.json({ ok: false, message: 'Proxy test failed' }); }
-});
+app.post('/api/test-proxy', (req, res) => res.json(testProxy()));
 
-app.post('/api/test-x', async (req, res) => {
-    const key = envGet('ACCESS_KEY');
-    const url = 'http://127.0.0.1:1200/twitter/user/X' + (key ? `?key=${encodeURIComponent(key)}` : '');
-    try {
-        const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
-        res.json({ ok: r.ok, message: `Route returned HTTP ${r.status}` });
-    } catch (e) { res.json({ ok: false, message: e.message }); }
-});
+app.post('/api/test-x', async (req, res) => res.json(await testX()));
 
 // ---- Webshare usage (read-only, via the webshare CLI) ----
 const WEBSHARE_KEY = panelEnv.WEBSHARE_API_KEY;
-function webshare(args) {
-    return new Promise((resolve, reject) => {
-        execFile('/usr/local/bin/webshare', [...args, '--json'], {
-            timeout: 30000, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8',
-            env: { PATH: process.env.PATH, HOME: process.env.HOME || '/tmp', NO_COLOR: '1', WEBSHARE_API_KEY: WEBSHARE_KEY },
-        }, (err, stdout, stderr) => {
-            if (err) return reject(new Error(String(stderr || err.message).trim()));
-            try { resolve(JSON.parse(stdout)); } catch { reject(new Error('Unexpected output from webshare CLI')); }
-        });
-    });
-}
 function monthsBefore(iso, n) {
     const d = new Date(iso), day = d.getUTCDate();
     d.setUTCDate(1);
@@ -540,4 +368,4 @@ app.get('/api/webshare', async (req, res) => {
     }
 });
 
-app.listen(PORT, '127.0.0.1', () => console.log(`panel on 127.0.0.1:${PORT}`));
+app.listen(PORT, config.PANEL_BIND, () => console.log(`panel on ${config.PANEL_BIND}:${PORT}`));

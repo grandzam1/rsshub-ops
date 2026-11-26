@@ -54,7 +54,7 @@
   <button data-t="keys">Keys</button>
   <button data-t="actions">Actions</button>
   <button data-t="logs">Logs</button>
-  <button data-t="webshare">Webshare</button>
+  <button data-t="webshare">Proxy</button>
 </nav>
 <main>
   <section id="status">
@@ -82,6 +82,7 @@
       <label>Twitter auth_token</label>
       <div class="hint">Paste just the auth_token value (cookie string OK — we'll strip it). Comma-separate several.</div>
       <input id="twToken" placeholder="auth_token value(s)">
+      <button class="iconbtn" onclick="navigator.clipboard.writeText(document.getElementById('twToken').value)">Copy</button>
       <button class="btn" onclick="saveKey('TWITTER_AUTH_TOKEN','twToken')">Save</button>
       <button class="btn gray" onclick="removeKey('TWITTER_AUTH_TOKEN')">Remove</button>
       <button class="btn gray" onclick="testX(this)">Test X</button>
@@ -90,6 +91,7 @@
       <label>ACCESS_KEY</label>
       <div class="hint">Locks your RSSHub behind ?key=. Set one if the instance is public.</div>
       <input id="accKey" placeholder="leave empty to remove">
+      <button class="iconbtn" onclick="navigator.clipboard.writeText(document.getElementById('accKey').value)">Copy</button>
       <button class="btn" onclick="saveKey('ACCESS_KEY','accKey')">Save</button>
       <button class="btn gray" onclick="genKey()">Generate random</button>
       <button class="btn gray" onclick="removeKey('ACCESS_KEY')">Remove</button>
@@ -100,6 +102,7 @@
       <div class="keyrow"><input id="newKn" placeholder="NAME" style="flex:1"><input id="newKv" placeholder="value" style="flex:2"></div>
       <button class="btn" onclick="addOther()">Add / update</button>
       <div id="keyList" style="margin-top:1rem"></div>
+      <button class="btn op-btn" onclick="saveEditor('keyList','keyMsg',this)">Save & restart</button>
       <div class="msg" id="keyMsg"></div>
     </div>
   </section>
@@ -124,6 +127,11 @@
   </section>
 
   <section id="webshare" style="display:none">
+    <div class="card">
+      <div id="proxySettings"></div>
+      <button class="btn op-btn" onclick="saveEditor('proxySettings','proxyMsg',this)">Save & restart</button>
+      <div class="msg" id="proxyMsg"></div>
+    </div>
     <div class="card" id="wsCard"><p style="color:#94a3b8">Loading…</p></div>
     <div class="card" id="wsDaily" style="display:none"></div>
     <button class="btn gray" id="wsRefresh" onclick="loadWebshare(true)">Refresh</button>
@@ -173,18 +181,43 @@ async function loadStatus(){
     + `<div class="row"><span>Last build/deploy</span><span style="color:#94a3b8;font-size:.85rem">${s.lastDeploy?new Date(s.lastDeploy).toLocaleString():'—'}</span></div>`
     + `<div class="row"><span>ACCESS_KEY</span><span class="pill ${s.accessKeySet?'':'off'}">${s.accessKeySet?'set':'not set'}</span></div>`;
 }
+function renderEditor(id, values){
+  const container = document.getElementById(id);
+  container.replaceChildren();
+  for (const [source, entries] of Object.entries(values)) {
+    for (const [name, value] of Object.entries(entries)) {
+      const row = document.createElement('div');
+      const label = document.createElement('label'); label.textContent = `${source} .env: ${name}`;
+      const input = document.createElement('input'); input.type = 'text'; input.value = value; input.defaultValue = value;
+      input.dataset.source = source; input.dataset.name = name;
+      const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'iconbtn'; copy.textContent = 'Copy';
+      copy.onclick = () => navigator.clipboard.writeText(input.value);
+      row.append(label, input, copy);
+      if (HINTS[name]) { const hint = document.createElement('div'); hint.className = 'hint'; hint.textContent = HINTS[name]; row.append(hint); }
+      container.append(row);
+    }
+  }
+}
+async function saveEditor(id, messageId, button){
+  button.disabled = true;
+  try {
+    const settings = {}, panelSettings = {};
+    document.querySelectorAll(`#${id} input[data-source]`).forEach((input) => {
+      if (input.value !== input.defaultValue) (input.dataset.source === 'panel' ? panelSettings : settings)[input.dataset.name] = input.value;
+    });
+    const result = await api('/save', {settings, panelSettings});
+    msg(document.getElementById(messageId), result.message || result.error || 'Save failed', !!result.ok);
+    if (result.ok) document.querySelectorAll(`#${id} input[data-source]`).forEach((input) => { input.defaultValue = input.value; });
+  } finally { button.disabled = false; }
+}
 async function loadSettings(){
   const v = await (await fetch(A+'/settings')).json();
-  document.getElementById('setGrid').innerHTML = SETS.map(k =>
-    `<div><label>${k}</label><input id="s_${k}" value="${(v[k]||'').replace(/"/g,'&quot;')}"><div class="hint">${HINTS[k]}</div></div>`).join('');
+  renderEditor('setGrid', v);
   const bk = await (await fetch(A+'/backups')).json();
   document.getElementById('backupSel').innerHTML = bk.map(b=>`<option>${b.name}</option>`).join('') || '<option value="">— none —</option>';
 }
 async function saveSettings(){
-  const btn = document.getElementById('saveSet'); btn.disabled = true;
-  const settings = {}; SETS.forEach(k => settings[k] = document.getElementById('s_'+k).value.trim());
-  const r = await api('/save',{settings}); btn.disabled = false;
-  msg(document.getElementById('setMsg'), r.ok ? 'Saved, restarted, healthy ✓' : (r.error||'Failed'), r.ok);
+  await saveEditor('setGrid', 'setMsg', document.getElementById('saveSet'));
 }
 async function restoreBackup(){
   const name = document.getElementById('backupSel').value; if(!name) return;
@@ -193,8 +226,11 @@ async function restoreBackup(){
 }
 async function loadKeys(){
   const list = await (await fetch(A+'/keys')).json();
-  document.getElementById('keyList').innerHTML = list.map(k =>
-    `<div class="keyrow"><code>${k.name}</code><span class="pill ${k.configured?'':'off'}">${k.configured?'•••'+k.last4:'empty'}</span><button class="iconbtn" onclick="removeKey('${k.name}')">remove</button></div>`).join('') || '<div class="hint">No keys configured.</div>';
+  const values = {rsshub: {}, panel: {}};
+  list.forEach((entry) => { values[entry.source][entry.name] = entry.value; });
+  renderEditor('keyList', values);
+  document.getElementById('twToken').value = values.rsshub.TWITTER_AUTH_TOKEN || '';
+  document.getElementById('accKey').value = values.rsshub.ACCESS_KEY || '';
 }
 async function saveKey(name, inputId){
   const v = document.getElementById(inputId).value.trim();
@@ -235,6 +271,7 @@ async function loadLogs(){
 }
 function fmtBytes(b){ const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1000&&i<u.length-1){b/=1000;i++;} return (i?b.toFixed(2):b)+' '+u[i]; }
 async function loadWebshare(refresh){
+  renderEditor('proxySettings', await (await fetch(A+'/settings')).json());
   const c = document.getElementById('wsCard'), d = document.getElementById('wsDaily'), m = document.getElementById('wsMsg');
   const btn = document.getElementById('wsRefresh');
   m.style.display = 'none'; btn.disabled = true; btn.textContent = 'Loading…';
@@ -245,8 +282,7 @@ async function loadWebshare(refresh){
   const p = r.usage.limitBytes ? 100*r.usage.usedBytes/r.usage.limitBytes : 0;
   const pct = p > 0 && p < 0.001 ? '<0.001' : p.toFixed(p < 1 ? 3 : 1);
   const ctry = Object.entries(r.proxies.countries).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} ${v}`).join(', ');
-  c.innerHTML = row('API key', `<span class="pill">•••${r.keyLast4}</span>`)
-    + row('Plan', `${r.plan.id} · ${r.plan.type} · ${r.plan.proxyCount} proxies`)
+  c.innerHTML = row('Plan', `${r.plan.id} · ${r.plan.type} · ${r.plan.proxyCount} proxies`)
     + row('Bandwidth used (this cycle)', `${fmtBytes(r.usage.usedBytes)} (${pct}%)`)
     + `<div class="bar"><div style="width:${Math.min(100,p)}%"></div></div>`
     + row('Limit / remaining', `${r.plan.bandwidthLimitGB} GB / ${(r.usage.remainingBytes/1e9).toFixed(3)} GB left`)

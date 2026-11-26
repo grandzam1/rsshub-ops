@@ -1,1 +1,12 @@
-rsshub ALL=(root) NOPASSWD: /bin/systemctl restart rsshub, /bin/systemctl status rsshub, /bin/systemctl show rsshub*, /bin/journalctl -u rsshub*, /usr/bin/redis-cli FLUSHALL, /usr/local/bin/rsshub-deploy.sh
+rsshub ALL=(root) NOPASSWD: /bin/systemctl restart rsshub, \
+    /bin/systemctl show rsshub -p ActiveEnterTimestamp\,ActiveState\,NRestarts, \
+    /bin/journalctl -u rsshub -n 200 --no-pager, \
+    /usr/bin/redis-cli -h 127.0.0.1 -p 6379 FLUSHALL, \
+    /usr/local/bin/rsshub-deploy.sh "", \
+    /usr/local/bin/rsshub-service env, \
+    /usr/bin/docker compose --project-directory /var/lib/rsshub-docker/panel-stack --project-name rsshub-docker-staging --env-file /opt/rsshub-panel/.env --file /var/lib/rsshub-docker/panel-stack/compose.yml ps --all --format json, \
+    /usr/bin/docker compose --project-directory /var/lib/rsshub-docker/panel-stack --project-name rsshub-docker-staging --env-file /opt/rsshub-panel/.env --file /var/lib/rsshub-docker/panel-stack/compose.yml restart rsshub, \
+    /usr/bin/docker compose --project-directory /var/lib/rsshub-docker/panel-stack --project-name rsshub-docker-staging --env-file /opt/rsshub-panel/.env --file /var/lib/rsshub-docker/panel-stack/compose.yml up -d --no-deps --force-recreate rsshub, \
+    /usr/bin/docker compose --project-directory /var/lib/rsshub-docker/panel-stack --project-name rsshub-docker-staging --env-file /opt/rsshub-panel/.env --file /var/lib/rsshub-docker/panel-stack/compose.yml logs --no-color --tail 200 rsshub, \
+    /usr/bin/docker compose --project-directory /var/lib/rsshub-docker/panel-stack --project-name rsshub-docker-staging --env-file /opt/rsshub-panel/.env --file /var/lib/rsshub-docker/panel-stack/compose.yml exec -T redis redis-cli -p 6379 PING, \
+    /usr/bin/docker compose --project-directory /var/lib/rsshub-docker/panel-stack --project-name rsshub-docker-staging --env-file /opt/rsshub-panel/.env --file /var/lib/rsshub-docker/panel-stack/compose.yml exec -T redis redis-cli -p 6379 FLUSHALL

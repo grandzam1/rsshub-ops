@@ -1,0 +1,110 @@
+{
+  "name": "${DOCKER_PROJECT}",
+  "services": {
+    "rsshub": {
+      "image": "${RSSHUB_IMAGE}",
+      "restart": "unless-stopped",
+      "cpus": "${RSSHUB_CPUS}",
+      "mem_limit": "${RSSHUB_MEMORY}",
+      "memswap_limit": "${RSSHUB_MEMORY}",
+      "pids_limit": "${RSSHUB_PIDS}",
+      "command": [
+        "node",
+        "--max-old-space-size=${RSSHUB_HEAP_MB}",
+        "${RSSHUB_ENTRY}"
+      ],
+      "env_file": [
+        {
+          "path": "${RSSHUB_ENV_FILE}",
+          "format": "raw"
+        }
+      ],
+      "environment": {
+        "NODE_ENV": "production",
+        "PORT": "${RSSHUB_CONTAINER_PORT}",
+        "LISTEN_INADDR_ANY": "1",
+        "CACHE_TYPE": "redis",
+        "REDIS_URL": "${DOCKER_REDIS_URL}"
+      },
+      "ports": [
+        "${DOCKER_BIND}:${DOCKER_PUBLISH_PORT}:${RSSHUB_CONTAINER_PORT}"
+      ],
+      "labels": {
+        "traefik.enable": "false"
+      },
+      "depends_on": {
+        "redis": {
+          "condition": "service_healthy"
+        }
+      },
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "node",
+          "-e",
+          "const http=require('node:http');const u=new URL('http://127.0.0.1:'+process.env.PORT+'/healthz');if(process.env.ACCESS_KEY)u.searchParams.set('key',process.env.ACCESS_KEY);const r=http.get(u,(s)=>{s.resume();process.exit(s.statusCode===200?0:1)});r.setTimeout(5000,()=>{r.destroy();process.exit(1)});r.on('error',()=>process.exit(1));"
+        ],
+        "interval": "15s",
+        "timeout": "10s",
+        "retries": 6,
+        "start_period": "30s"
+      },
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-size": "${DOCKER_LOG_MAX_SIZE}",
+          "max-file": "${DOCKER_LOG_MAX_FILES}"
+        }
+      }
+    },
+    "redis": {
+      "image": "${REDIS_IMAGE}",
+      "restart": "unless-stopped",
+      "cpus": "${REDIS_CPUS}",
+      "mem_limit": "${REDIS_MEMORY}",
+      "memswap_limit": "${REDIS_MEMORY}",
+      "pids_limit": "${REDIS_PIDS}",
+      "command": [
+        "redis-server",
+        "--port",
+        "${REDIS_CONTAINER_PORT}",
+        "--maxmemory",
+        "${REDIS_MAXMEMORY}",
+        "--maxmemory-policy",
+        "allkeys-lru",
+        "--appendonly",
+        "yes",
+        "--appendfsync",
+        "everysec"
+      ],
+      "labels": {
+        "traefik.enable": "false"
+      },
+      "volumes": [
+        "redis-data:/data"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "redis-cli",
+          "-p",
+          "${REDIS_CONTAINER_PORT}",
+          "ping"
+        ],
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 6
+      },
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-size": "${DOCKER_LOG_MAX_SIZE}",
+          "max-file": "${DOCKER_LOG_MAX_FILES}"
+        }
+      }
+    }
+  },
+  "volumes": {
+    "redis-data": {}
+  }
+}
